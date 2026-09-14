@@ -1,0 +1,45 @@
+{
+  "enabled": {
+    "description": "启用自动通知",
+    "type": "bool",
+    "default": true,
+    "hint": "自动向名单允许的群发送通知。关闭后仍可使用查询指令。修改后重载插件。"
+  },
+  "group_mode": {
+    "description": "群通知名单模式",
+    "type": "string",
+    "default": "whitelist",
+    "options": [
+      "whitelist",
+      "blacklist"
+    ],
+    "hint": "whitelist = 白名单：只通知列表内的群，空列表全部关闭；blacklist = 黑名单：通知列表以外的已识别群，空列表全部开启。名单只控制主动通知，查询指令仍可使用。"
+  },
+  "group_ids": {
+    "description": "群号 / 群会话列表",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "每项填一个群号（如 123456789）或完整群会话（如 bot1:GroupMessage:123456789，首段为机器人实例 ID）。纯群号匹配所有实例的同号群；完整会话可直接作为通知地址。OneBot 自动读取群列表，其他平台收到群消息后识别地址。订阅/取消指令直接修改此列表；保存后重载插件。"
+  },
+  "poll_interval": {
+    "description": "检查间隔（秒）",
+    "type": "int",
+    "default": 120,
+    "hint": "默认每 2 分钟检查一次，最小 60 秒。没有符合名单规则的已识别群时不请求重置接口。"
+  },
+  "utc_offset": {
+    "description": "显示时区的 UTC 偏移小时数",
+    "type": "float",
+    "default": 8,
+    "hint": "中国标准时间填 8，UTC 填 0；支持 5.5 等小数，范围 -12 到 14。固定偏移，不自动切换夏令时。"
+  },
+  "proxy": {
+    "description": "HTTP 代理（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "例如 http://127.0.0.1:7890。留空使用系统代理环境变量。代理须能访问 codex-reset.com；不支持自动处理 Cloudflare 验证。"
+  }
+}

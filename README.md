@@ -1,14 +1,74 @@
-# astrbot-plugin-helloworld
+# Codex 重置通知
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-reset.com/api/forecast)追踪公共全局额度重置，按 WebUI 黑白名单向群发送通知，并提供上次重置时间和下次预测查询。无需 OpenAI 账号、API Key 或网站登录。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 安装与使用
 
-# Supports
+本目录已经由 `helloworld` 模板改造完成，可以保持目录名不变。在 AstrBot 插件管理页面重载/启用插件（如果尚未发现，请重启 AstrBot），显示名称为 **Codex 重置通知**。依赖 `aiohttp`，AstrBot 已自带。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+在 **插件管理 → Codex 重置通知 → 配置** 中选择名单模式并填写群号，保存后重载；无需再执行订阅指令。也可以由 **AstrBot 管理员**在目标群发送 `/codex 订阅` 开启通知，两种入口修改同一份名单。管理员指 AstrBot 配置的管理员账号，群管理员身份本身不会获得权限。普通成员可以查询。
+
+| 指令 | 功能 |
+| --- | --- |
+| `/codex` 或 `/codex 状态` | 上次重置、预测、本群通知范围和名单模式 |
+| `/codex 上次` | 上次公共重置时间、距今时间、公告链接 |
+| `/codex 预测` | 24/48 小时概率、公告窗口（若有）、历史间隔推算时间 |
+| `/codex 订阅` | 按当前名单模式启用本群通知，需 AstrBot 管理员 |
+| `/codex 取消` | 按当前名单模式关闭本群通知，需 AstrBot 管理员 |
+| `/codex 帮助` | 查看帮助 |
+
+支持英文参数 `status / last / forecast / subscribe / unsubscribe / help`，主指令别名为 `/codex重置`。指令前缀遵循 AstrBot 的唤醒配置。
+
+## 配置
+
+在插件配置页面调整，保存后重载插件：
+
+- `enabled`：自动通知总开关，默认开启。关闭不影响查询指令。
+- `group_mode`：`whitelist`（白名单，默认）或 `blacklist`（黑名单）。
+- `group_ids`：共用的群列表，每项填写一个群号或完整群会话。
+- `poll_interval`：轮询秒数，默认 120，最小 60。没有符合名单规则的已识别群时不请求重置接口，查询共用 60 秒缓存。
+- `utc_offset`：固定 UTC 偏移，默认 `8`（中国标准时间）；不自动切换夏令时。
+- `proxy`：可选 HTTP 代理地址，例如 `http://127.0.0.1:7890`。留空遵循代理环境变量；Docker 内的 `127.0.0.1` 指容器自身。
+
+## 名单行为
+
+| 模式 | 通知范围 | 列表为空 | `/codex 订阅` | `/codex 取消` |
+| --- | --- | --- | --- | --- |
+| `whitelist` 白名单 | 列表内的群 | 全部关闭 | 加入名单 | 移出名单 |
+| `blacklist` 黑名单 | 列表以外的已识别群 | 已识别群全部开启 | 移出名单 | 加入名单 |
+
+群内指令保留当前模式，并立即写入插件配置；刷新 WebUI 配置页即可看到变更。名单只决定主动通知范围，普通成员仍可查询重置和预测。总开关关闭时，即使名单允许也不推送。
+
+- 纯群号如 `123456789` 匹配所有机器人实例上的同号群。需要只控制某个实例时，填写 `bot1:GroupMessage:123456789`，`bot1` 是 AstrBot 中机器人实例的 ID；可参考 `/sid` 获取的会话信息，若开启群成员会话隔离，最后一段应使用群号，不包含成员 ID。
+- 指令新增条目使用完整群会话。移出名单时会同时移除本群的纯群号和完整会话条目；纯群号条目覆盖各实例的同号群，移除该条目也会影响这些群。
+- **OneBot（如 NapCat）**：自动读取机器人群列表，每 10 分钟刷新；发现失败保留已有群地址并重试。白名单直接填写群号即可，黑名单模式无需逐群订阅。
+- **其他平台**：收到该群消息后自动记录地址。第一次使用时可在目标群发一条机器人能接收的消息；白名单也可以直接填写完整群会话，免去地址发现步骤。黑名单不代表能够向尚未识别地址的群发送消息。
+- 首次升级自动把旧版订阅迁移为白名单并保留发送进度。如果已经配置新名单或选择黑名单，则保留新配置。迁移只运行一次，此后在 WebUI 清空白名单不会恢复旧订阅。
+
+## 通知与预测规则
+
+- 使用接口的 `last_reset_at` 作为网站认定的最近公共重置时间；不以推文关键词、候选事件、额度提升或 banked reset 发放判断全局重置。
+- 群地址和每群已通知的重置时间存入 AstrBot 插件 KV 存储，仅用于寻找地址和去重；是否通知只由 WebUI 名单决定。新增或重新启用的群首次成功检查只建立基线，不推送历史记录。
+- 新的重置时间才触发通知。每群发送成功后持久化进度，失败或平台未就绪时保留进度并重试；重启/重载保留名单和去重状态。发送成功与持久化之间异常退出仍可能重复一次。
+- 长时间离线恢复后仅通知最新一次重置，不逐条补发期间所有历史重置。上游时间回退不会重复推送旧记录。
+- 数据源超过 30 分钟未更新时停止推送。网络失败、HTTP 403/429 或格式变化不推进通知状态；查询可显示明确标注的旧内存缓存。
+- 24/48 小时概率直接来自网站，起点为网站的 `updated_at`。插件另按“上次重置 + 近期中位间隔”提供带标签的时间参考；它与网站概率模型是不同计算，时间已过也不表示重置即将发生。
+- 网站跟踪公开公告，不能查看个人额度。时间通常是公告/确认时刻，群通知不保证每个账号已到账；请以个人 Codex 界面为准。预测方法参见[网站说明](https://codex-reset.com/forecast-method)。
+
+## 排查
+
+插件会优先直连网站接口。若收到 HTTP 403（Cloudflare 验证），会自动改用 Jina Reader 读取同一个公开接口的数据；该后备只请求公开的预测 JSON，不上传 AstrBot、群或账号信息。后备也不可用时，才会提示检查网络或配置 HTTP 代理。
+
+群通知使用 AstrBot 的跨平台主动消息接口，要求适配器支持主动群消息（例如 OneBot）。QQ 官方 API 不支持 AstrBot 的此主动发送接口。启用后可先查询确认数据源可达，再配置名单或在目标群使用订阅指令。
+
+## 开发验证
+
+在 AstrBot 项目根目录执行：
+
+```bash
+python -m pytest data/plugins/helloworld/tests -q -p no:cacheprovider
+ruff format data/plugins/helloworld
+ruff check data/plugins/helloworld
+```
+
+测试使用合成接口数据和模拟群发送，不向真实群发消息。发布到自己的仓库时，更新 `metadata.yaml` 的 `author` 并添加真实 `repo` 地址；当前不会指向原模板仓库执行更新。
