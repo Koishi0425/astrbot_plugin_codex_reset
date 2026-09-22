@@ -19,6 +19,14 @@ AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-re
 
 支持英文参数 `status / last / forecast / subscribe / unsubscribe / help`，主指令别名为 `/codex重置`。指令前缀遵循 AstrBot 的唤醒配置。
 
+## 更新插件
+
+版本变化见 [更新日志](CHANGELOG.md)。
+
+- **从插件市场安装**：先确认 [AstrBot Cloud 插件页面](https://cloud.astrbot.app/plugin/Koishi0425/astrbot_plugin_codex_reset) 的版本已更新，再刷新 AstrBot WebUI 的插件市场并执行更新。市场安装使用登记的版本安装包；GitHub 默认分支有新提交，不代表客户端已能下载该版本。
+- **通过仓库安装或手动克隆**：更新仓库后重载插件，让 AstrBot 重新读取 `metadata.yaml`；仅刷新浏览器页面不会替换正在运行的插件代码。
+- **版本仍旧**：核对市场版本、实际安装目录中的 `metadata.yaml` 版本和已加载插件版本。市场仍旧时需要等待 Cloud 同步或由发布者在 Cloud 管理页检查发布状态；文件已更新而已加载版本仍旧时重载插件。
+
 ## 配置
 
 在插件配置页面调整，保存后重载插件：
@@ -73,3 +81,13 @@ ruff check data/plugins/astrbot_plugin_codex_reset
 ```
 
 测试使用合成接口数据和模拟群发送，不向真实群发消息。请求 User-Agent 标识本插件仓库，查询与通知均保留数据来源链接。
+
+## 维护者发布流程
+
+1. 在发布分支更新 `metadata.yaml` 的版本与根目录 `CHANGELOG.md`，保持 `author`、`name` 和 `repo` 稳定，并运行验证。
+2. 将发布提交合入并推送到仓库默认分支。版本一旦在 Cloud 发布，后续修复递增版本，不覆盖旧版本安装包。
+3. 在 AstrBot Cloud 的插件管理页面检查同步和版本发布状态，确认新版本生成了安装包。GitHub Tag 或 Release 可用于保留发布记录，但不能代替 Cloud 的市场版本。
+4. 核对 AstrBot 使用的市场记录 `Glmg/astrbot_plugin_codex_reset`：`version`、`commit_sha` 和 `download_url` 应对应本次发布。市场接口和客户端都有缓存，Cloud 页面先更新时，客户端可能仍暂时看到旧版本。
+5. 下载市场记录中的安装包，确认其中的 `metadata.yaml`、`CHANGELOG.md` 和插件代码属于同一版本，再确认 Cloud 更新日志页能显示本次内容。
+
+参考：[官方插件发布说明](https://docs.astrbot.app/dev/star/plugin-publish.html)、[插件市场更新规范](https://docs.astrbot.app/en/dev/plugin-market/2026-06-27.html)。

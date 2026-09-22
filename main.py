@@ -114,7 +114,7 @@ class CodexResetPlugin(Star):
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20),
             headers={
-                "User-Agent": "astrbot_plugin_codex_reset/1.2.0 (+https://github.com/Koishi0425/astrbot_plugin_codex_reset)",
+                "User-Agent": "astrbot_plugin_codex_reset/1.2.1 (+https://github.com/Koishi0425/astrbot_plugin_codex_reset)",
                 "Accept": "application/json",
             },
             trust_env=True,
