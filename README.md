@@ -1,10 +1,10 @@
 # Codex 重置通知
 
-AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-reset.com/api/forecast)追踪公共全局额度重置，按 WebUI 黑白名单向群发送通知，并提供上次重置时间和下次预测查询。无需 OpenAI 账号、API Key 或网站登录。
+AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-reset.com/api/forecast)追踪公共全局额度重置和 Tibo 重置预告，按 WebUI 黑白名单向群发送通知，并提供上次重置时间和下次预测查询。无需 OpenAI 账号、API Key 或网站登录。
 
 ## 安装与使用
 
-本目录已经由 `helloworld` 模板改造完成，可以保持目录名不变。在 AstrBot 插件管理页面重载/启用插件（如果尚未发现，请重启 AstrBot），显示名称为 **Codex 重置通知**。依赖 `aiohttp`，AstrBot 已自带。
+插件目录名为 `astrbot_plugin_codex_reset`。在 AstrBot 插件管理页面重载/启用插件（如果尚未发现，请重启 AstrBot），显示名称为 **Codex 重置通知**。依赖 `aiohttp`，AstrBot 已自带。
 
 在 **插件管理 → Codex 重置通知 → 配置** 中选择名单模式并填写群号，保存后重载；无需再执行订阅指令。也可以由 **AstrBot 管理员**在目标群发送 `/codex 订阅` 开启通知，两种入口修改同一份名单。管理员指 AstrBot 配置的管理员账号，群管理员身份本身不会获得权限。普通成员可以查询。
 
@@ -12,7 +12,7 @@ AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-re
 | --- | --- |
 | `/codex` 或 `/codex 状态` | 上次重置、预测、本群通知范围和名单模式 |
 | `/codex 上次` | 上次公共重置时间、距今时间、公告链接 |
-| `/codex 预测` | 24/48 小时概率、公告窗口（若有）、历史间隔推算时间 |
+| `/codex 预测` | 当前重置预告及推文、信号评分、公告窗口、24/48 小时历史概率 |
 | `/codex 订阅` | 按当前名单模式启用本群通知，需 AstrBot 管理员 |
 | `/codex 取消` | 按当前名单模式关闭本群通知，需 AstrBot 管理员 |
 | `/codex 帮助` | 查看帮助 |
@@ -48,11 +48,12 @@ AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-re
 ## 通知与预测规则
 
 - 使用接口的 `last_reset_at` 作为网站认定的最近公共重置时间；不以推文关键词、候选事件、额度提升或 banked reset 发放判断全局重置。
-- 群地址和每群已通知的重置时间存入 AstrBot 插件 KV 存储，仅用于寻找地址和去重；是否通知只由 WebUI 名单决定。新增或重新启用的群首次成功检查只建立基线，不推送历史记录。
-- 新的重置时间才触发通知。每群发送成功后持久化进度，失败或平台未就绪时保留进度并重试；重启/重载保留名单和去重状态。发送成功与持久化之间异常退出仍可能重复一次。
+- 重置预告单独识别网站 `latest_alert` 中仍有效的 `watch/active`，仅通知网站评为 83% 或 93% 的强信号；过期、已落地、普通暗示不推送。预告注明尚未确认完成，包含推文和时间窗口，不改变上次重置时间。
+- 群地址和每群已通知的重置时间、预告事件 ID 存入 AstrBot 插件 KV 存储，仅用于寻找地址和去重；是否通知只由 WebUI 名单决定。新增或重新启用的群不推送历史重置；当前仍有效且未通知过的预告会发送一次，因此从旧版升级后也能收到当前预告。
+- 新的重置时间触发完成通知；新的有效预告触发预告通知，按网站 `alert_event_id` 单独去重。每群发送成功后持久化进度，失败或平台未就绪时保留进度并重试；重启/重载保留名单和去重状态。发送成功与持久化之间异常退出仍可能重复一次。
 - 长时间离线恢复后仅通知最新一次重置，不逐条补发期间所有历史重置。上游时间回退不会重复推送旧记录。
 - 数据源超过 30 分钟未更新时停止推送。网络失败、HTTP 403/429 或格式变化不推进通知状态；查询可显示明确标注的旧内存缓存。
-- 24/48 小时概率直接来自网站，起点为网站的 `updated_at`。插件另按“上次重置 + 近期中位间隔”提供带标签的时间参考；它与网站概率模型是不同计算，时间已过也不表示重置即将发生。
+- 预告信号评分（83%/93%）与历史模型的 24/48 小时概率分别展示，不把二者混作同一个数。24/48 小时概率直接来自网站，起点为网站的 `updated_at`。插件另按“上次重置 + 近期中位间隔”提供带标签的时间参考；它与网站概率模型是不同计算，时间已过也不表示重置即将发生。
 - 网站跟踪公开公告，不能查看个人额度。时间通常是公告/确认时刻，群通知不保证每个账号已到账；请以个人 Codex 界面为准。预测方法参见[网站说明](https://codex-reset.com/forecast-method)。
 
 ## 排查
@@ -66,9 +67,9 @@ AstrBot 插件，通过 [codex-reset.com 的公开预测接口](https://codex-re
 在 AstrBot 项目根目录执行：
 
 ```bash
-python -m pytest data/plugins/helloworld/tests -q -p no:cacheprovider
-ruff format data/plugins/helloworld
-ruff check data/plugins/helloworld
+python -m pytest data/plugins/astrbot_plugin_codex_reset/tests -q -p no:cacheprovider
+ruff format data/plugins/astrbot_plugin_codex_reset
+ruff check data/plugins/astrbot_plugin_codex_reset
 ```
 
-测试使用合成接口数据和模拟群发送，不向真实群发消息。发布到自己的仓库时，更新 `metadata.yaml` 的 `author` 并添加真实 `repo` 地址；当前不会指向原模板仓库执行更新。
+测试使用合成接口数据和模拟群发送，不向真实群发消息。请求 User-Agent 标识本插件仓库，查询与通知均保留数据来源链接。

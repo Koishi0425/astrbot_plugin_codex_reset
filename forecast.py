@@ -78,19 +78,59 @@ class Forecast:
         age = (datetime.now(timezone.utc) - self.updated_at).total_seconds()
         return -300 <= age <= 1800 and not self.payload.get("stale", False)
 
+    def active_watch(self) -> tuple[str, dict[str, Any]] | None:
+        """Select a live reset promise without treating it as a completed reset.
+
+        Returns:
+            The upstream event ID and Watch details, or None for inactive,
+            malformed, expired, or already fulfilled signals.
+        """
+        alert_id = self.payload.get("alert_event_id")
+        alert = self.payload.get("latest_alert")
+        if (
+            not isinstance(alert_id, str)
+            or not alert_id.strip()
+            or not isinstance(alert, dict)
+            or alert.get("kind") != "watch"
+            or alert.get("state") != "active"
+        ):
+            return None
+        score = alert.get("score")
+        if (
+            isinstance(score, bool)
+            or not isinstance(score, (int, float))
+            or score not in (83, 93)
+        ):
+            return None
+        try:
+            source_at = parse_time(alert.get("source_at"))
+            if source_at > self.updated_at or (
+                self.last_reset and source_at <= self.last_reset
+            ):
+                return None
+            window = alert.get("window") or {}
+            if not isinstance(window, dict):
+                return None
+            deadline = window.get("end_at") or window.get("target_at")
+            if deadline and parse_time(deadline) <= datetime.now(timezone.utc):
+                return None
+        except ValueError:
+            return None
+        return alert_id, alert
+
     def render(self, tz: timezone, action: str = "status") -> str:
         """Render source facts and explicitly labeled timing estimates.
 
         Args:
             tz: Display timezone selected in plugin configuration.
-            action: One of status, last, or forecast.
+            action: One of status, last, forecast, or watch (notification only).
 
         Returns:
             A Chinese response including source and calculation time.
         """
         data = self.payload
         lines = ["Codex 公共重置信息"]
-        if action != "forecast":
+        if action not in {"forecast", "watch"}:
             if self.last_reset:
                 local = self.last_reset.astimezone(tz)
                 elapsed = max(
@@ -115,17 +155,38 @@ class Forecast:
                 if matches and isinstance(alert.get("url"), str):
                     lines.append(f"公告：{alert['url']}")
         if action != "last":
-            probabilities = data["probabilities"]
-            for hours in (24, 48):
-                value = probabilities.get(f"rounded_{hours}h")
-                display = f"{value:g}%" if value is not None else "暂无数据"
-                lines.append(f"网站计算时点起 {hours} 小时内重置概率：{display}")
-            confidence = {"low": "低", "medium": "中", "high": "高"}.get(
-                data.get("confidence"), "未知"
-            )
-            lines.append(f"预测置信度：{confidence}")
             signal = data.get("official_signal") or {}
-            window = signal.get("window") or signal
+            watch = self.active_watch()
+            if watch:
+                _, alert = watch
+                lines.append("当前状态：Tibo 已预告重置，等待确认。")
+                lines.append(
+                    f"网站预告信号评分：{alert['score']:g}%（不是 24 小时概率）"
+                )
+                summary = alert.get("summary")
+                if isinstance(summary, str) and summary.strip():
+                    lines.append(f"预告原文：{summary.strip()}")
+                source_at = parse_time(alert["source_at"]).astimezone(tz)
+                lines.append(f"预告发布：{source_at:%Y-%m-%d %H:%M:%S %Z}")
+                url = alert.get("url")
+                if isinstance(url, str) and url.startswith("https://"):
+                    lines.append(f"推文：{url}")
+                window = alert.get("window") or signal.get("window") or {}
+            else:
+                window = signal.get("window") or signal
+            if action != "watch":
+                probabilities = data["probabilities"]
+                for hours in (24, 48):
+                    value = probabilities.get(f"rounded_{hours}h")
+                    display = f"{value:g}%" if value is not None else "暂无数据"
+                    prefix = "历史模型：" if watch else ""
+                    lines.append(
+                        f"{prefix}网站计算时点起 {hours} 小时内重置概率：{display}"
+                    )
+                confidence = {"low": "低", "medium": "中", "high": "高"}.get(
+                    data.get("confidence"), "未知"
+                )
+                lines.append(f"历史模型预测置信度：{confidence}")
             target = (
                 (window.get("target_at") or window.get("end_at"))
                 if isinstance(window, dict)
@@ -144,38 +205,41 @@ class Forecast:
                     lines.append("该窗口已经过去，尚不能据此认定已重置。")
             else:
                 lines.append("下次确切时间：暂无可用的公告时间窗口。")
-            cadence = data.get("cadence") or {}
-            median = cadence.get("recent_median_days")
-            if (
-                self.last_reset
-                and isinstance(median, (int, float))
-                and not isinstance(median, bool)
-                and math.isfinite(median)
-                and 0 < median <= 365
-            ):
-                estimate = self.last_reset + timedelta(days=median)
-                lines.append(
-                    f"按近期中位间隔 {median:g} 天推算：{estimate.astimezone(tz):%Y-%m-%d %H:%M %Z}"
-                )
-                lines.append("此时间由插件按历史间隔推算，仅作参考。")
-                if estimate < datetime.now(timezone.utc):
-                    lines.append("历史推算时间已过，不代表即将重置。")
-            peak = data.get("time_window") or {}
-            start, end = peak.get("start_hour"), peak.get("end_hour")
-            if peak.get("timezone") == "UTC" and all(
-                isinstance(h, int) and not isinstance(h, bool) and 0 <= h <= 23
-                for h in (start, end)
-            ):
-                anchor = datetime(2000, 1, 1, tzinfo=timezone.utc)
-                start_at = (anchor + timedelta(hours=start)).astimezone(tz)
-                end_at = (
-                    anchor + timedelta(hours=end if end > start else end + 24)
-                ).astimezone(tz)
-                across = "次日 " if end_at.date() > start_at.date() else ""
-                lines.append(
-                    f"历史常见时段：{start_at:%H:%M}–{across}{end_at:%H:%M %Z}"
-                )
-            lines.append("预测不是官方承诺，也不代表个人额度重置时间。")
+            if action != "watch":
+                cadence = data.get("cadence") or {}
+                median = cadence.get("recent_median_days")
+                if (
+                    self.last_reset
+                    and isinstance(median, (int, float))
+                    and not isinstance(median, bool)
+                    and math.isfinite(median)
+                    and 0 < median <= 365
+                ):
+                    estimate = self.last_reset + timedelta(days=median)
+                    lines.append(
+                        f"按近期中位间隔 {median:g} 天推算：{estimate.astimezone(tz):%Y-%m-%d %H:%M %Z}"
+                    )
+                    lines.append("此时间由插件按历史间隔推算，仅作参考。")
+                    if estimate < datetime.now(timezone.utc):
+                        lines.append("历史推算时间已过，不代表即将重置。")
+                peak = data.get("time_window") or {}
+                start, end = peak.get("start_hour"), peak.get("end_hour")
+                if peak.get("timezone") == "UTC" and all(
+                    isinstance(h, int) and not isinstance(h, bool) and 0 <= h <= 23
+                    for h in (start, end)
+                ):
+                    anchor = datetime(2000, 1, 1, tzinfo=timezone.utc)
+                    start_at = (anchor + timedelta(hours=start)).astimezone(tz)
+                    end_at = (
+                        anchor + timedelta(hours=end if end > start else end + 24)
+                    ).astimezone(tz)
+                    across = "次日 " if end_at.date() > start_at.date() else ""
+                    lines.append(
+                        f"历史常见时段：{start_at:%H:%M}–{across}{end_at:%H:%M %Z}"
+                    )
+            lines.append(
+                "网站预测与信号评分不保证重置时间；个人额度请以 Codex 中显示为准。"
+            )
         lines.append(f"网站更新：{self.updated_at.astimezone(tz):%Y-%m-%d %H:%M:%S %Z}")
         lines.append("来源：https://codex-reset.com/")
         return "\n".join(lines)

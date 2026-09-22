@@ -52,6 +52,7 @@ class CodexResetPlugin(Star):
         config["group_ids"] = normalized
         self.known_groups: set[str] = set()
         self.delivery_cursors: dict[str, str | None] = {}
+        self.alert_cursors: dict[str, str | None] = {}
         self.next_discovery = 0.0
         self.cached: Forecast | None = None
         self.cache_time = 0.0
@@ -70,14 +71,17 @@ class CodexResetPlugin(Star):
             legacy = await self.get_kv_data("subscriptions", {})
             if not isinstance(legacy, dict):
                 raise ValueError("Invalid stored Codex reset subscriptions")
-            stored = {"known_groups": list(legacy), "cursors": legacy}
+            stored = {"known_groups": list(legacy), "cursors": legacy, "alerts": {}}
+        if not isinstance(stored, dict):
+            raise ValueError("Invalid stored Codex reset delivery state")
+        stored.setdefault("alerts", {})
         if (
-            not isinstance(stored, dict)
-            or not isinstance(stored.get("known_groups"), list)
+            not isinstance(stored.get("known_groups"), list)
             or not isinstance(stored.get("cursors"), dict)
+            or not isinstance(stored.get("alerts"), dict)
         ):
             raise ValueError("Invalid stored Codex reset delivery state")
-        for origin in [*stored["known_groups"], *stored["cursors"]]:
+        for origin in [*stored["known_groups"], *stored["cursors"], *stored["alerts"]]:
             if not isinstance(origin, str):
                 raise ValueError("Invalid stored group session")
             session = MessageSession.from_str(origin)
@@ -90,8 +94,12 @@ class CodexResetPlugin(Star):
         for cursor in stored["cursors"].values():
             if cursor is not None:
                 parse_time(cursor)
+        for alert_id in stored["alerts"].values():
+            if alert_id is not None and (not isinstance(alert_id, str) or not alert_id):
+                raise ValueError("Invalid stored Codex reset alert cursor")
         self.known_groups = set(stored["known_groups"]) | set(stored["cursors"])
         self.delivery_cursors = dict(stored["cursors"])
+        self.alert_cursors = dict(stored["alerts"])
         if migrating:
             # An explicit new policy takes precedence over legacy subscriptions.
             if (
@@ -106,7 +114,7 @@ class CodexResetPlugin(Star):
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=20),
             headers={
-                "User-Agent": "AstrBot-CodexReset/1.0",
+                "User-Agent": "astrbot_plugin_codex_reset/1.2.0 (+https://github.com/Koishi0425/astrbot_plugin_codex_reset)",
                 "Accept": "application/json",
             },
             trust_env=True,
@@ -129,12 +137,13 @@ class CodexResetPlugin(Star):
         return matched if mode == "whitelist" else mode == "blacklist" and not matched
 
     async def save_delivery_state(self):
-        """Persist discovered addresses and cursors without storing a second policy."""
+        """Persist discovered addresses and per-event cursors without a second policy."""
         await self.put_kv_data(
             "delivery_state",
             {
                 "known_groups": sorted(self.known_groups),
                 "cursors": dict(self.delivery_cursors),
+                "alerts": dict(self.alert_cursors),
             },
         )
 
@@ -311,31 +320,54 @@ class CodexResetPlugin(Star):
             return forecast
 
     async def notify_groups(self, forecast: Forecast):
-        """Deliver the newest reset independently to each currently allowed group.
+        """Deliver reset confirmations and live promises with separate receipts.
 
         Args:
             forecast: Validated source data. Stale snapshots are never delivered.
         """
-        if (
-            not self.config.get("enabled", True)
-            or not forecast.is_fresh()
-            or forecast.last_reset is None
-        ):
+        if not self.config.get("enabled", True) or not forecast.is_fresh():
             return
-        reset_at = forecast.last_reset.isoformat()
+        reset_at = forecast.last_reset.isoformat() if forecast.last_reset else None
+        watch = forecast.active_watch()
         async with self.state_lock:
             for origin, cursor in list(self.delivery_cursors.items()):
                 if not self.is_group_enabled(origin):
                     continue
-                # The first successful check establishes a silent baseline.
-                if cursor is not None and parse_time(cursor) >= forecast.last_reset:
-                    continue
-                if cursor is not None:
-                    message = (
-                        "【Codex 额度重置通知】\n"
-                        + forecast.render(self.tz, "last")
-                        + "\n请在自己的 Codex 中确认额度到账。"
+                pending = []
+                if reset_at and cursor is None:
+                    # Past resets establish a baseline; live promises remain useful.
+                    self.delivery_cursors[origin] = reset_at
+                    try:
+                        await self.save_delivery_state()
+                    except Exception:
+                        self.delivery_cursors[origin] = cursor
+                        raise
+                elif reset_at and parse_time(cursor) < forecast.last_reset:
+                    pending.append(
+                        (
+                            self.delivery_cursors,
+                            reset_at,
+                            "【Codex 额度重置通知】\n"
+                            + forecast.render(self.tz, "last")
+                            + "\n请在自己的 Codex 中确认额度到账。",
+                        )
                     )
+                if watch:
+                    watch_id, alert = watch
+                    if self.alert_cursors.get(origin) != watch_id and (
+                        cursor is None
+                        or parse_time(cursor) < parse_time(alert["source_at"])
+                    ):
+                        pending.append(
+                            (
+                                self.alert_cursors,
+                                watch_id,
+                                "【Codex 重置预告】\n"
+                                + forecast.render(self.tz, "watch")
+                                + "\n这是重置预告，网站尚未确认重置完成。",
+                            )
+                        )
+                for receipts, event_id, message in pending:
                     try:
                         delivered = await asyncio.wait_for(
                             self.context.send_message(
@@ -353,13 +385,14 @@ class CodexResetPlugin(Star):
                             "Codex reset delivery failed for %s: %s", origin, exc
                         )
                         continue
-                self.delivery_cursors[origin] = reset_at
-                # Persist after success; a failed group keeps its own retry cursor.
-                try:
-                    await self.save_delivery_state()
-                except Exception:
-                    self.delivery_cursors[origin] = cursor
-                    raise
+                    previous = receipts.get(origin)
+                    receipts[origin] = event_id
+                    # Failed groups and failed state writes retain their retry cursor.
+                    try:
+                        await self.save_delivery_state()
+                    except Exception:
+                        receipts[origin] = previous
+                        raise
 
     async def poll(self):
         """Refresh configured targets and retry source and delivery errors."""
@@ -439,7 +472,9 @@ class CodexResetPlugin(Star):
                     label = "白名单" if mode == "whitelist" else "黑名单"
                     reply += f"\n{label}已同步到 WebUI；当前名单模式保持不变。"
                     if action == "subscribe" and not was_enabled:
-                        reply += "\n首次成功检查仅建立基线，不补发历史重置。"
+                        reply += (
+                            "\n历史重置仅建立基线；当前仍有效的重置预告会通知一次。"
+                        )
                     if action == "subscribe" and not self.config.get("enabled", True):
                         reply += "\n当前自动通知已关闭，请在插件配置中启用并重载。"
             yield event.plain_result(reply)
@@ -449,7 +484,7 @@ class CodexResetPlugin(Star):
                 "Codex 公共重置追踪\n"
                 "/codex 状态 — 上次重置与下次预测\n"
                 "/codex 上次 — 上次重置时间\n"
-                "/codex 预测 — 下次时间参考与 24/48 小时概率\n"
+                "/codex 预测 — 当前预告、时间窗口与 24/48 小时概率\n"
                 "/codex 订阅 — 在当前名单模式下启用本群通知（管理员）\n"
                 "/codex 取消 — 在当前名单模式下关闭本群通知（管理员）\n"
                 "时间默认 UTC+08:00；跟踪公共全局重置。"
