@@ -96,6 +96,18 @@ class Forecast:
         ):
             return None
         score = alert.get("score")
+        if score is None:
+            # A null alert score may be supplied by the matching official signal.
+            signal = self.payload.get("official_signal") or {}
+            signal_score = signal.get("score")
+            if (
+                signal.get("alert_event_id") == alert_id
+                and isinstance(alert.get("id"), str)
+                and bool(alert["id"].strip())
+                and signal.get("tweet_id") == alert["id"]
+                and isinstance(signal_score, dict)
+            ):
+                score = signal_score.get("value")
         if (
             isinstance(score, bool)
             or not isinstance(score, (int, float))
@@ -116,7 +128,8 @@ class Forecast:
                 return None
         except ValueError:
             return None
-        return alert_id, alert
+        # Use the resolved score for rendering without changing the snapshot.
+        return alert_id, {**alert, "score": score}
 
     def render(self, tz: timezone, action: str = "status") -> str:
         """Render source facts and explicitly labeled timing estimates.

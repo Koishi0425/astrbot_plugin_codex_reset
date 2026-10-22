@@ -264,3 +264,44 @@ async def test_later_promise_is_delivered(plugin, payload):
     payload["latest_alert"]["source_at"] = "2026-09-22T06:00:00Z"
     await plugin.notify_groups(Forecast.from_payload(payload))
     assert plugin.context.send_message.await_count == 2
+
+
+@pytest.fixture
+def null_score_payload(payload):
+    payload["latest_alert"].update(id="tweet-1", score=None)
+    payload["official_signal"].update(
+        tweet_id="tweet-1",
+        alert_event_id=payload["alert_event_id"],
+        score={"value": 93},
+    )
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_null_score_uses_matching_signal(plugin, null_score_payload):
+    before = deepcopy(null_score_payload)
+    forecast = Forecast.from_payload(null_score_payload)
+    await plugin.notify_groups(forecast)
+    await plugin.notify_groups(forecast)
+    plugin.context.send_message.assert_awaited_once()
+    message = plugin.context.send_message.await_args.args[1].chain[0].text
+    assert "93%（不是 24 小时概率）" in message
+    assert plugin.alert_cursors[GROUP] == null_score_payload["alert_event_id"]
+    assert null_score_payload == before
+
+
+@pytest.mark.parametrize(
+    "section,field,value",
+    [
+        ("official_signal", "alert_event_id", "signal:other:likely"),
+        ("official_signal", "tweet_id", "other"),
+        ("official_signal", "score", {"value": 50}),
+        ("latest_alert", "id", None),
+        ("latest_alert", "score", 50),
+    ],
+)
+def test_score_fallback_rejects_invalid_signal(
+    null_score_payload, section, field, value
+):
+    null_score_payload[section][field] = value
+    assert Forecast.from_payload(null_score_payload).active_watch() is None
